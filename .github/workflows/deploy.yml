@@ -1,4 +1,4 @@
-name: Build and Deploy Java Docker App
+name: Build and Deploy Java-App
 
 on:
   push:
@@ -6,55 +6,56 @@ on:
       - main # Trigger on pushes to the main branch
 
 env:
-  AWS_REGION: ap-south-1 # REPLACE WITH YOUR AWS REGION (e.g., ap-south-1)
-  ECR_REPOSITORY: my-java-app # Your ECR repository name
-  CODE_DEPLOY_APPLICATION_NAME: MyJavaWebApp # Your CodeDeploy application name
-  CODE_DEPLOY_DEPLOYMENT_GROUP_NAME: MyJavaWebApp # Your CodeDeploy deployment group name
-  SSM_PARAMETER_NAME: /myapp/docker-image-tag # Your SSM Parameter name
+  AWS_REGION: ap-south-1 # <-- IMPORTANT: Set your AWS region here (e.g., ap-south-1, us-east-1)
+  ECR_REPOSITORY_NAME: my-java-app # <-- IMPORTANT: Set your ECR repository name here
+  CODE_DEPLOY_APP_NAME: MyJavaWebApp # <-- IMPORTANT: Set your CodeDeploy Application Name
+  CODE_DEPLOY_GROUP_NAME: MyJavaWebApp # <-- IMPORTANT: Set your CodeDeploy Deployment Group Name
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    environment: production # Good practice to use environments for secrets/variables
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v1-beta
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+        id: login-ecr # Assign an ID to this step to reference its outputs
+        uses: aws-actions/amazon-ecr-login@v1
 
       - name: Build and push Docker image
-        id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: latest # Uses 'latest' tag as per your requirement
+          IMAGE_TAG: ${{ github.sha }} # Use the Git commit SHA as the image tag
         run: |
-          # The 'docker build .' command now runs the multi-stage Dockerfile
-          docker build -t ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG} -f Dockerfile complete/
-          docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
-          echo "pushed_image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT # Capture the tag for later
+          # Build Docker image using 'complete/' as context and 'Dockerfile' at root
+          docker build -t ${ECR_REGISTRY}/${{ env.ECR_REPOSITORY_NAME }}:${IMAGE_TAG} -f Dockerfile complete/
+          # Push the Docker image to ECR
+          docker push ${ECR_REGISTRY}/${{ env.ECR_REPOSITORY_NAME }}:${IMAGE_TAG}
 
-      - name: Update SSM Parameter Store with latest image tag
+      - name: Store image tag in SSM Parameter Store # <-- NEW STEP TO SOLVE PARAMETER NOT FOUND
         run: |
           aws ssm put-parameter \
-            --name "${{ env.SSM_PARAMETER_NAME }}" \
-            --value "${{ steps.build-image.outputs.pushed_image_tag }}" \
-            --type "String" \
+            --name "/my-java-app/image-tag" \
+            --value "${{ github.sha }}" \
+            --type String \
             --overwrite \
-            --region ${{ env.AWS_REGION }}
+            --region ${{ env.AWS_REGION }} # Use the region defined at the top
+        # Ensure the IAM role for GitHub Actions has 'ssm:PutParameter' permission
 
       - name: Create CodeDeploy deployment
         run: |
           aws deploy create-deployment \
-            --application-name "${{ env.CODE_DEPLOY_APPLICATION_NAME }}" \
-            --deployment-group-name "${{ env.CODE_DEPLOY_DEPLOYMENT_GROUP_NAME }}" \
-            --github-location repository=${{ github.repository }},commitId=${{ github.sha }}
+            --application-name ${{ env.CODE_DEPLOY_APP_NAME }} \
+            --deployment-group-name ${{ env.CODE_DEPLOY_GROUP_NAME }} \
+            --deployment-config-name CodeDeployDefault.OneAtATime \
+            --github-location repository=${{ github.repository }},commitId=${{ github.sha }} \
+            --description "Deployment triggered by GitHub Actions for commit ${{ github.sha }}" \
+            --region ${{ env.AWS_REGION }} # Use the region defined at the top

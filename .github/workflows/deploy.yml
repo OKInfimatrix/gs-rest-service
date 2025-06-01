@@ -1,0 +1,60 @@
+name: Build and Deploy Java Docker App
+
+on:
+  push:
+    branches:
+      - main # Trigger on pushes to the main branch
+
+env:
+  AWS_REGION: ap-south-1 # REPLACE WITH YOUR AWS REGION (e.g., ap-south-1)
+  ECR_REPOSITORY: my-java-app # Your ECR repository name
+  CODE_DEPLOY_APPLICATION_NAME: MyJavaWebApp # Your CodeDeploy application name
+  CODE_DEPLOY_DEPLOYMENT_GROUP_NAME: MyJavaWebApp # Your CodeDeploy deployment group name
+  SSM_PARAMETER_NAME: /myapp/docker-image-tag # Your SSM Parameter name
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: production # Good practice to use environments for secrets/variables
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: latest # Uses 'latest' tag as per your requirement
+        run: |
+          # The 'docker build .' command now runs the multi-stage Dockerfile
+          docker build -t ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG} -f Dockerfile complete/
+          docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+          echo "pushed_image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT # Capture the tag for later
+
+      - name: Update SSM Parameter Store with latest image tag
+        run: |
+          aws ssm put-parameter \
+            --name "${{ env.SSM_PARAMETER_NAME }}" \
+            --value "${{ steps.build-image.outputs.pushed_image_tag }}" \
+            --type "String" \
+            --overwrite \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Create CodeDeploy deployment
+        run: |
+          aws deploy create-deployment \
+            --application-name "${{ env.CODE_DEPLOY_APPLICATION_NAME }}" \
+            --deployment-group-name "${{ env.CODE_DEPLOY_DEPLOYMENT_GROUP_NAME }}" \
+            --github-location repository=${{ github.repository }},commitId=${{ github.sha }}

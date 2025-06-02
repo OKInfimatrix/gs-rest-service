@@ -1,3 +1,3 @@
 #!/bin/bash
-docker stop gs-rest-service-container || true
-docker rm gs-rest-service-container || true
+docker stop my-java-app-container || true
+docker rm my-java-app-container || true
